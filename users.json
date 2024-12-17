@@ -1,0 +1,9 @@
+{
+    "jwt_secret": "T17x$p#Yv6Nz!Kf3LgQ9r@Wd8X2b*C7mEr4Ao&RjZ5Hk^Uw%OqPt6!V8Rn$Yj#Xw",
+    "token_expire_days": 7,
+    "users": {
+        "admin": "admin123",
+        "eggree": "eggree123",
+        "kizai": "kizai123"
+    }
+}
