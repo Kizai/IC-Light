@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+import gc
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -72,10 +73,10 @@ class RelightRequest(BaseModel):
 
     # 添加参数验证
     def validate_dimensions(self) -> "RelightRequest":
-        if not (256 <= self.image_width <= 2048):
-            raise ValueError("image_width must be between 256 and 2048")
-        if not (256 <= self.image_height <= 2048):
-            raise ValueError("image_height must be between 256 and 2048")
+        if not (512 <= self.image_width <= 1600):
+            raise ValueError("image_width must be between 512 and 1600")
+        if not (512 <= self.image_height <= 1600):
+            raise ValueError("image_height must be between 512 and 1600")
         if not (1 <= self.num_samples <= 12):
             raise ValueError("num_samples must be between 1 and 12")
         return self
@@ -89,8 +90,8 @@ class RelightRequestBase64(BaseModel):
     num_samples: int
     seed: int = 12345
     steps: int = 25
-    a_prompt: str = "best quality"
-    n_prompt: str = "lowres, bad anatomy, bad hands, cropped, worst quality"
+    a_prompt: str = "best quality, realistic colors, original materials and textures, consistent product appearance, vibrant and accurate colors, true-to-life details, no artistic filters, retain natural product surface, realistic lighting"
+    n_prompt: str = "lowres, bad anatomy, bad hands, cropped, worst quality, unrealistic colors, faded colors, oversaturated, plastic textures, incorrect materials, artistic effects, bad lighting, blurry textures, distorted surfaces"
     cfg: float = 2.0
     highres_scale: float = 1.5
     highres_denoise: float = 0.5
@@ -98,10 +99,10 @@ class RelightRequestBase64(BaseModel):
     bg_source: str = "None"
 
     def validate_dimensions(self) -> "RelightRequestBase64":
-        if not (256 <= self.image_width <= 2048):
-            raise ValueError("image_width must be between 256 and 2048")
-        if not (256 <= self.image_height <= 2048):
-            raise ValueError("image_height must be between 256 and 2048")
+        if not (512 <= self.image_width <= 1600):
+            raise ValueError("image_width must be between 512 and 1600")
+        if not (512 <= self.image_height <= 1600):
+            raise ValueError("image_height must be between 512 and 1600")
         if not (1 <= self.num_samples <= 12):
             raise ValueError("num_samples must be between 1 and 12")
         return self
@@ -136,6 +137,11 @@ async def relight(
     file: UploadFile = File(...),
 ):
     try:
+        # 清理GPU内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         # 验证参数
         request.validate_dimensions()
         
@@ -169,6 +175,7 @@ async def relight(
 
         return {
             "status": "success",
+            "prompt": request.prompt,
             "preprocessed": preprocessed_b64,
             "results": results_b64
         }
@@ -196,6 +203,11 @@ async def relight_download(
     bg_source: str = Form("None"),
 ):
     try:
+        # 清理GPU内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         # 验证参数
         request = RelightRequest(
             prompt=prompt,
@@ -266,7 +278,8 @@ async def relight_download(
         response = FileResponse(
             zip_filepath,
             media_type='application/zip',
-            filename=f"results_{file_id}.zip"
+            filename=f"results_{file_id}.zip",
+            headers={"X-Prompt": prompt}
         )
         
         # 创建清理任务
@@ -282,6 +295,11 @@ async def relight_download(
 @app.post("/relight/base64")
 async def relight_base64(request: RelightRequestBase64):
     try:
+        # 清理GPU内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         # 验证参数
         request.validate_dimensions()
         
@@ -312,8 +330,14 @@ async def relight_base64(request: RelightRequestBase64):
         preprocessed_b64 = image_to_base64(Image.fromarray(preprocessed))
         results_b64 = [image_to_base64(Image.fromarray(img)) for img in results]
 
+        # 再次清理GPU内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         return {
             "status": "success",
+            "prompt": request.prompt,
             "preprocessed": preprocessed_b64,
             "results": results_b64
         }
@@ -341,4 +365,5 @@ def run_gradio():
 
 if __name__ == "__main__":
     import uvicorn
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     uvicorn.run(app, host="0.0.0.0", port=8000) 
