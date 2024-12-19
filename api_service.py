@@ -16,6 +16,9 @@ import tempfile
 import uuid
 import gradio as gr
 import threading
+import logging
+from logging.handlers import RotatingFileHandler
+import time
 
 # 导入必要的模型和处理函数
 from main import (
@@ -28,7 +31,29 @@ from main import (
     rmbg
 )
 
+# 配置日志
+os.makedirs('logs', exist_ok=True)
+logging.basicConfig(
+    handlers=[RotatingFileHandler('logs/api.log', maxBytes=50*1024*1024, backupCount=5)],
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('api_service')
+
 app = FastAPI(title="SceneMagic API", version="1.0.0")
+
+# 添加请求日志中间件
+@app.middleware("http")
+async def log_requests(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    logger.info(
+        f"Method: {request.method} Path: {request.url.path} "
+        f"Status: {response.status_code} "
+        f"Process Time: {process_time:.2f}s"
+    )
+    return response
 
 # 配置CORS
 app.add_middleware(
@@ -45,7 +70,7 @@ class RelightRequest(BaseModel):
     prompt: str
     image_width: int
     image_height: int
-    num_samples: int
+    num_samples: int = 1  # 默认生成1张
     
     # 可选参数，有默认值
     seed: int = 12345
@@ -137,6 +162,7 @@ async def relight(
     file: UploadFile = File(...),
 ):
     try:
+        logger.info(f"Received relight request - Prompt: {request.prompt}")
         # 清理GPU内存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -170,20 +196,19 @@ async def relight(
         )
 
         # 转换结果为base64
-        preprocessed_b64 = image_to_base64(Image.fromarray(preprocessed))
         results_b64 = [image_to_base64(Image.fromarray(img)) for img in results]
 
         return {
             "status": "success",
             "prompt": request.prompt,
-            "preprocessed": preprocessed_b64,
             "results": results_b64
         }
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing relight request: {str(e)}")
+        raise
 
 @app.post("/relight/download")
 async def relight_download(
@@ -203,6 +228,7 @@ async def relight_download(
     bg_source: str = Form("None"),
 ):
     try:
+        logger.info(f"Received relight download request - Prompt: {prompt}")
         # 清理GPU内存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -253,53 +279,35 @@ async def relight_download(
         # 生成唯一文件名
         file_id = str(uuid.uuid4())
         
-        # 保存图片
-        result_files = []
-        for idx, img in enumerate(results):
-            filename = f"{file_id}_{idx}.png"
-            filepath = os.path.join(TEMP_DIR, filename)
-            Image.fromarray(img).save(filepath)
-            result_files.append(filepath)
+        # 保存为单张PNG图片
+        filename = f"{file_id}.png"
+        filepath = os.path.join(TEMP_DIR, filename)
+        # 如果生成多张图片，只保存第一张
+        Image.fromarray(results[0]).save(filepath)
 
-        # 创建zip文件
-        zip_filename = f"{file_id}.zip"
-        zip_filepath = os.path.join(TEMP_DIR, zip_filename)
-        
-        import zipfile
-        with zipfile.ZipFile(zip_filepath, 'w') as zipf:
-            for f in result_files:
-                zipf.write(f, os.path.basename(f))
-
-        # 清理单个图片文件
-        for f in result_files:
-            os.remove(f)
-
-        # 返回zip文件
+        # 返回图片文件
         response = FileResponse(
-            zip_filepath,
-            media_type='application/zip',
-            filename=f"results_{file_id}.zip",
+            filepath,
+            media_type='image/png',
+            filename=f"result_{file_id}.png",
             headers={"X-Prompt": prompt}
         )
         
         # 创建清理任务
-        asyncio.create_task(cleanup_file(zip_filepath))
+        asyncio.create_task(cleanup_file(filepath))
         
         return response
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing relight download request: {str(e)}")
+        raise
 
 @app.post("/relight/base64")
 async def relight_base64(request: RelightRequestBase64):
     try:
-        # 清理GPU内存
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-        
+        logger.info(f"Received relight base64 request - Prompt: {request.prompt}")
         # 验证参数
         request.validate_dimensions()
         
@@ -326,26 +334,33 @@ async def relight_base64(request: RelightRequestBase64):
             request.bg_source
         )
 
-        # 转换结果为base64
-        preprocessed_b64 = image_to_base64(Image.fromarray(preprocessed))
-        results_b64 = [image_to_base64(Image.fromarray(img)) for img in results]
-
-        # 再次清理GPU内存
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
+        # 生成唯一文件名
+        file_id = str(uuid.uuid4())
         
-        return {
-            "status": "success",
-            "prompt": request.prompt,
-            "preprocessed": preprocessed_b64,
-            "results": results_b64
-        }
+        # 保存为单张PNG图片
+        filename = f"{file_id}.png"
+        filepath = os.path.join(TEMP_DIR, filename)
+        # 如果生成多张图片，只保存第一张
+        Image.fromarray(results[0]).save(filepath)
+
+        # 返回图片文件
+        response = FileResponse(
+            filepath,
+            media_type='image/png',
+            filename=f"result_{file_id}.png",
+            headers={"X-Prompt": request.prompt}
+        )
+        
+        # 创建清理任务
+        asyncio.create_task(cleanup_file(filepath))
+        
+        return response
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing relight base64 request: {str(e)}")
+        raise
 
 async def cleanup_file(filepath: str):
     """异步清理临文件"""
