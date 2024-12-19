@@ -1,15 +1,6 @@
 import warnings
 import logging
-
-# 过滤警告信息
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# 设置日志级别
-logging.getLogger("transformers").setLevel(logging.ERROR)
-logging.getLogger("diffusers").setLevel(logging.ERROR)
-logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
-
+from logging.handlers import RotatingFileHandler
 import os
 import math
 import gradio as gr
@@ -38,7 +29,25 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from functools import partial
+import time
 
+# 配置日志
+os.makedirs('logs', exist_ok=True)
+logging.basicConfig(
+    handlers=[RotatingFileHandler('logs/main.log', maxBytes=50*1024*1024, backupCount=5)],
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('main_service')
+
+# 过滤警告信息
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# 设置日志级别
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("diffusers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 # 'stablediffusionapi/realistic-vision-v51'
 # 'runwayml/stable-diffusion-v1-5'
@@ -405,9 +414,30 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 @torch.inference_mode()
 def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg)
-    results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
-    return input_fg, results
+    logger.info(f"Processing image with prompt: {prompt}")
+    logger.info(f"Parameters: width={image_width}, height={image_height}, samples={num_samples}, "
+                f"seed={seed}, steps={steps}, bg_source={bg_source}")
+    try:
+        start_time = time.time()
+        
+        # 记录GPU内存使用情况
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_allocated() / 1024**3  # GB
+            logger.info(f"GPU memory usage before processing: {gpu_memory:.2f}GB")
+        
+        input_fg, matting = run_rmbg(input_fg)
+        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
+        process_time = time.time() - start_time
+        logger.info(f"Image processed successfully in {process_time:.2f}s")
+        
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_allocated() / 1024**3  # GB
+            logger.info(f"GPU memory usage after processing: {gpu_memory:.2f}GB")
+        
+        return input_fg, results
+    except Exception as e:
+        logger.error(f"Error processing image: {str(e)}")
+        raise
 
 
 quick_prompts = [
@@ -471,7 +501,7 @@ def login(username, password):
             "visible": True
         }
     return {
-        "message": "用户名或密码错误！",
+        "message": "用户名���密码错误！",
         "visible": False
     }
 
@@ -530,7 +560,7 @@ block = gr.Blocks()
 def check_login_required(fn):
     """登录检查装饰器"""
     def wrapper(*args, **kwargs):
-        # ��取最后一个参数作为登录状态
+        # 取最后一个参数作为登录状态
         is_logged_in = args[-1]
         if not is_logged_in:
             raise gr.Error("请先登录后使用")
